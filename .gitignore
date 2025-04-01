@@ -1,0 +1,25 @@
+# Python virtual environment
+venv/
+
+# Python cache
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# Environment variables
+.env
+
+# Credentials
+creds.json
+token.pickle
+
+# Temporary files
+*.wav
+*.mp3
+
+# IDE specific files
+.vscode/
+.idea/
+*.swp
+*.swo
