@@ -1,7 +1,6 @@
 import os
 from typing import Dict, List, Optional
 from datetime import datetime, timezone, timedelta
-from google.oauth2.credentials import Credentials
 from google_auth_oauthlib.flow import InstalledAppFlow
 from google.auth.transport.requests import Request
 from googleapiclient.discovery import build

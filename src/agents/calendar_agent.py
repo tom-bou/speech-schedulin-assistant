@@ -125,16 +125,10 @@ def create_calendar_agent():
                 # Parse as naive datetimes
                 start_time = datetime.fromisoformat(start_time_str)
                 end_time = datetime.fromisoformat(end_time_str)
-
-                # Localize the naive datetime objects using the system's local timezone
-                if start_time.tzinfo is None:
-                    start_time = local_tz.localize(start_time)
-                if end_time.tzinfo is None:
-                    end_time = local_tz.localize(end_time)
-
-                # Convert to UTC for the Calendar API
-                event_details['start_time'] = start_time.astimezone(pytz.UTC).isoformat()
-                event_details['end_time'] = end_time.astimezone(pytz.UTC).isoformat()
+                
+                # Convert to UTC and format without double Z
+                event_details['start_time'] = start_time.astimezone(pytz.UTC).strftime('%Y-%m-%dT%H:%M:%SZ')
+                event_details['end_time'] = end_time.astimezone(pytz.UTC).strftime('%Y-%m-%dT%H:%M:%SZ')
 
                 print("Converted times:")
                 print(f"Start (UTC): {event_details['start_time']}")
@@ -152,6 +146,24 @@ def create_calendar_agent():
         def get_events_wrapper(**kwargs: Dict[str, Any]) -> str:
             try:
                 print(f"Fetching events from {kwargs['time_min']} to {kwargs['time_max']}")
+                start_time_str = kwargs['time_min']
+                end_time_str = kwargs['time_max']
+                
+                if start_time_str.endswith('Z'):
+                    start_time_str = start_time_str[:-1]
+                if end_time_str.endswith('Z'):
+                    end_time_str = end_time_str[:-1]
+
+                # Parse as naive datetimes
+                start_time = datetime.fromisoformat(start_time_str)
+                end_time = datetime.fromisoformat(end_time_str)
+                
+                # Convert to UTC and format without double Z
+                kwargs['time_min'] = start_time.astimezone(pytz.UTC).strftime('%Y-%m-%dT%H:%M:%SZ')
+                kwargs['time_max'] = end_time.astimezone(pytz.UTC).strftime('%Y-%m-%dT%H:%M:%SZ')
+                
+                print(f"Fetching events from {kwargs['time_min']} to {kwargs['time_max']}")
+                
                 events = get_events(calendar_service, kwargs['time_min'], kwargs['time_max'])
                 if events:
                     print(f"\nFound {len(events)} events:")
@@ -165,6 +177,7 @@ def create_calendar_agent():
         def delete_event_wrapper(**kwargs: Dict[str, Any]) -> str:
             try:
                 print(f"Attempting to delete event with ID: {kwargs['event_id']}")
+                
                 result = delete_event(calendar_service, kwargs['event_id'])
                 print(f"\nEvent deletion result: {'SUCCESS' if result else 'FAILED'}")
                 if result:
