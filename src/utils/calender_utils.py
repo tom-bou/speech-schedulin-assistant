@@ -43,7 +43,7 @@ def _get_credentials():
     print("Credentials obtained successfully")
     return creds
 
-def find_event_by_title(service, title: str, time_min: str = None, time_max: str = None) -> Optional[str]:
+async def find_event_by_title(service, title: str, time_min: str = None, time_max: str = None) -> Optional[str]:
     """Find an event by its title and return its ID"""
     try:
         print(f"\nSearching for event with title: {title}")
@@ -75,7 +75,7 @@ def find_event_by_title(service, title: str, time_min: str = None, time_max: str
         print(f"Error details: {str(e)}")
         return None
 
-def add_event(service, event_details: Dict) -> bool:
+async def add_event(service, event_details: Dict) -> bool:
     """Add a new event to Google Calendar"""
     try:
         print("\nPreparing to add event to Google Calendar...")
@@ -101,7 +101,7 @@ def add_event(service, event_details: Dict) -> bool:
         print(f"Error details: {str(e)}")
         return False
 
-def get_events(service, time_min: str, time_max: str) -> List[Dict]:
+async def get_events(service, time_min: str, time_max: str) -> List[Dict]:
     """Get all events within a time range"""
     try:
         # Ensure timestamps are in UTC format with 'Z' suffix
@@ -128,7 +128,7 @@ def get_events(service, time_min: str, time_max: str) -> List[Dict]:
         print(f"Error details: {str(e)}")
         return []
 
-def delete_event(service, event_id_or_title: str) -> bool:
+async def delete_event(service, event_id_or_title: str) -> bool:
     """Delete an event by its ID or title"""
     try:
         print(f"\nAttempting to delete event with ID/title: {event_id_or_title}")
