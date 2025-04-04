@@ -1,8 +1,17 @@
 """
-Agent-related functionality for the scheduling assistant.
+Agent implementations for the scheduling assistant.
 """
 
-from .calendar_agent import create_calendar_agent
-from .planning_agent import create_planning_agent
+from .calendar_agent import CalendarAgent
+from .planning_agent import PlanningAgent
+from .group_chat_manager import GroupChatManager, GroupChatMessage, RequestToSpeak
+from .user_agent import UserAgent
 
-__all__ = ['create_calendar_agent', 'create_planning_agent'] 
+__all__ = [
+    'CalendarAgent',
+    'PlanningAgent',
+    'GroupChatManager',
+    'GroupChatMessage',
+    'RequestToSpeak',
+    'UserAgent'
+] 

@@ -1,99 +1,126 @@
+"""
+Main entry point for the scheduling assistant.
+"""
+
 import os
-import sys
-import autogen
-from datetime import datetime, timedelta
-from typing import Sequence
-from autogen_agentchat.agents import UserProxyAgent
-from autogen_agentchat.conditions import MaxMessageTermination, TextMentionTermination
-from autogen_agentchat.messages import AgentEvent, ChatMessage
-from autogen_agentchat.teams import SelectorGroupChat
-from autogen_agentchat.ui import Console
-from autogen_ext.models.openai import OpenAIChatCompletionClient
+import asyncio
 from dotenv import load_dotenv
-
-load_dotenv()
-
-# Add the project root directory to the Python path
-project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-sys.path.insert(0, project_root)
-
-from src.agent_factory import create_agents
+from autogen_ext.models.openai import OpenAIChatCompletionClient
+from autogen_core import SingleThreadedAgentRuntime, TypeSubscription, TopicId
+from .agents.group_chat_manager import GroupChatManager, GroupChatMessage, RequestToSpeak
+from .agents.user_agent import UserAgent
+from autogen_core.models import UserMessage
+import uuid
+from .agents.calendar_agent import CalendarAgent
+from .agents.planning_agent import PlanningAgent
 
 async def main():
-    """Main function to run the scheduling assistant"""
-    try:
-        # Initialize the model client
-        model_client = OpenAIChatCompletionClient(model="gpt-4")
-        
-        # Create the agents and its functions
-        calender_agent, planning_agent = create_agents(model_client)
-        
-        # Define termination conditions
-        text_mention_termination = TextMentionTermination("TERMINATE")
-        max_messages_termination = MaxMessageTermination(max_messages=25)
-        termination = text_mention_termination | max_messages_termination
-        
-        # Define the selector prompt
-        selector_prompt = """Select an agent to perform task.
-
-        {roles}
-
-        Current conversation context:
-        {history}
-
-        Read the above conversation, then select an agent from {participants} to perform the next task.
-        Make sure the calendar assistant has assigned tasks before other agents start working.
-        Only select one agent.
-        """
-        
-        user_proxy_agent = UserProxyAgent("UserProxyAgent", description="A proxy for the user to approve or disapprove tasks.")
-
-
-        def selector_func_with_user_proxy(messages: Sequence[AgentEvent | ChatMessage]) -> str | None:
-            if messages[-1].source != planning_agent.name and messages[-1].source != user_proxy_agent.name:
-                # Planning agent should be the first to engage when given a new task, or check progress.
-                return planning_agent.name
-            if messages[-1].source == planning_agent.name:
-                if messages[-2].source == user_proxy_agent.name and "APPROVE" in messages[-1].content.upper():  # type: ignore
-                    # User has approved the plan, proceed to the next agent.
-                    return None
-                # Use the user proxy agent to get the user's approval to proceed.
-                return user_proxy_agent.name
-            if messages[-1].source == user_proxy_agent.name:
-                # If the user does not approve, return to the planning agent.
-                if "APPROVE" not in messages[-1].content.upper():  # type: ignore
-                    return planning_agent.name
-            return None
-                
-        # Create the team with all agents
-        team = SelectorGroupChat(
-            [calender_agent, planning_agent, user_proxy_agent],
-            model_client=model_client,
-            termination_condition=termination,
-            selector_prompt=selector_prompt,
-            selector_func=selector_func_with_user_proxy,
-            allow_repeated_speaker=True
+    """Initialize and run the scheduling assistant."""
+    # Load environment variables
+    load_dotenv()
+    
+    # Initialize the model client
+    model_client = OpenAIChatCompletionClient(
+        api_key=os.getenv("OPENAI_API_KEY"),
+        model="gpt-4-turbo-preview"
+    )
+    
+    # Create the runtime
+    runtime = SingleThreadedAgentRuntime()
+    
+    # Define topic types
+    calendar_topic_type = "CalendarAgent"
+    planning_topic_type = "PlanningAgent"
+    user_topic_type = "User"
+    group_chat_topic_type = "planning"
+    
+    # Define descriptions
+    calendar_description = "Calendar agent for managing calendar operations"
+    planning_description = "Planning agent for coordinating scheduling tasks"
+    user_description = "User for providing final approval and giving "
+    
+    # Register calendar agent
+    calendar_agent_type = await CalendarAgent.register(
+        runtime,
+        calendar_topic_type,
+        lambda: CalendarAgent(
+            description=calendar_description,
+            group_chat_topic_type=group_chat_topic_type,
+            model_client=model_client
         )
+    )
+    await runtime.add_subscription(TypeSubscription(topic_type=calendar_topic_type, agent_type=calendar_agent_type.type))
+    await runtime.add_subscription(TypeSubscription(topic_type=group_chat_topic_type, agent_type=calendar_agent_type.type))
+    
+    # Register planning agent
+    planning_agent_type = await PlanningAgent.register(
+        runtime,
+        planning_topic_type,
+        lambda: PlanningAgent(
+            description=planning_description,
+            group_chat_topic_type=group_chat_topic_type,
+            model_client=model_client
+        )
+    )
+    await runtime.add_subscription(TypeSubscription(topic_type=planning_topic_type, agent_type=planning_agent_type.type))
+    await runtime.add_subscription(TypeSubscription(topic_type=group_chat_topic_type, agent_type=planning_agent_type.type))
+    
+    # Register user agent
+    user_agent_type = await UserAgent.register(
+        runtime,
+        user_topic_type,
+        lambda: UserAgent(
+            description=user_description,
+            group_chat_topic_type=group_chat_topic_type
+        )
+    )
+    await runtime.add_subscription(TypeSubscription(topic_type=user_topic_type, agent_type=user_agent_type.type))
+    await runtime.add_subscription(TypeSubscription(topic_type=group_chat_topic_type, agent_type=user_agent_type.type))
+    
+    # Register group chat manager
+    group_chat_manager_type = await GroupChatManager.register(
+        runtime,
+        "group_chat_manager",
+        lambda: GroupChatManager(
+            participant_topic_types=[calendar_topic_type, planning_topic_type, user_topic_type],
+            model_client=model_client,
+            participant_descriptions=[calendar_description, planning_description, user_description]
+        )
+    )
+    await runtime.add_subscription(
+        TypeSubscription(topic_type=group_chat_topic_type, agent_type=group_chat_manager_type.type)
+    )
+    
+    # Print welcome message
+    print("\nWelcome to the Scheduling Assistant!")
+    print("You can interact with me using natural language.")
+    print("Example commands:")
+    print("- Schedule a meeting with John this week")
+    print("- Check my calendar for next week")
+    print("- Plan tomorrow's schedule")
+    print("- Delete the team meeting on Friday")
+    print("\nType 'exit' to quit.\n")
+    
+    # Start the runtime
+    runtime.start()
+    session_id = str(uuid.uuid4())
+    
+    # Wait for user input
+    user_input = input("\nYou: ")
         
-        # Print welcome message
-        print("\nWelcome to the Scheduling Assistant!")
-        print("I can help you with:")
-        print("1. Adding new calendar events")
-        print("2. Viewing your calendar events")
-        print("3. Deleting calendar events")
-        print("\nExample commands:")
-        print("- Add a meeting tomorrow at 2 PM")
-        print("- Show my events for next week")
-        print("- Delete the team meeting on Friday")
-        print("\nType 'exit' to quit or 'TERMINATE' to end the conversation.")
-        
-        # Start the chat
-        await Console(team.run_stream(task="Hello! I'm your planning assistant. How can I help you today?"))
-        
-    except Exception as e:
-        print(f"Error in main: {str(e)}")
-        raise
+    # Create a topic ID for this message
+    topic_id = TopicId(type=group_chat_topic_type, source=session_id)
+    
+    # Publish the user's message
+    await runtime.publish_message(
+        GroupChatMessage(
+            body=UserMessage(content=user_input, source="User")
+        ),
+        topic_id
+    )
+            
+    # Stop the runtime
+    await runtime.stop_when_idle()
 
 if __name__ == "__main__":
-    import asyncio
     asyncio.run(main())

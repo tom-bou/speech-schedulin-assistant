@@ -6,7 +6,25 @@ import os
 from typing import Dict, Any, List
 from datetime import datetime, timezone
 import pytz
-from autogen_agentchat.agents import AssistantAgent
+from autogen_core import (
+    MessageContext,
+    RoutedAgent,
+    message_handler,
+    DefaultTopicId,
+    FunctionCall
+)
+from autogen_core.models import (
+    ChatCompletionClient,
+    SystemMessage,
+    UserMessage,
+    AssistantMessage,
+    
+)
+from autogen_core.tools import FunctionTool
+from rich.console import Console
+from rich.markdown import Markdown
+import json
+
 from ..utils.calender_utils import (
     get_calendar_service,
     add_event,
@@ -14,33 +32,82 @@ from ..utils.calender_utils import (
     delete_event,
 )
 from ..utils.event_utils import format_event_details
-from autogen_core.tools import FunctionTool
+from .group_chat_manager import GroupChatMessage, RequestToSpeak
 
-
-def create_calendar_agent(model_client):
-    """Create and configure the calendar assistant agent with its functions"""
-    try:
+class CalendarAgent(RoutedAgent):
+    """Calendar agent for managing calendar operations"""
+    
+    def __init__(self, description: str, group_chat_topic_type: str, model_client: ChatCompletionClient):
+        super().__init__(description=description)
+        self._model_client = model_client
+        self._group_chat_topic_type = group_chat_topic_type
+        self._chat_history: List[UserMessage | AssistantMessage] = []
+        
         # Initialize the calendar service
-        calendar_service = get_calendar_service()
+        self._calendar_service = get_calendar_service()
+        
+        # Initialize tools
+        self._tools = self._create_tools()
+        
+        # Set system message
+        self._system_message = SystemMessage(content=f"""You are a helpful scheduling assistant. Your role is to:
+        1. Process user requests for calendar operations
+        2. Validate required information for calendar events
+        3. Generate appropriate questions when information is missing
+        4. Coordinate with the calendar agent to perform operations
+        5. Provide clear responses to the user
 
-        now = datetime.now()
-        local_now = now.astimezone()
-        local_tz = local_now.tzinfo
-        try:
-            # Try to get system timezone
-            import subprocess
+        IMPORTANT: You MUST use the provided functions to perform calendar operations. Do not just say you've done something - actually call the function.
 
-            if os.name == "nt":  # Windows
-                import win32timezone
+        You have access to the following functions:
+        - add_event(event_details): Add a new event to the calendar
+        - get_events(time_min, time_max): Get events in a time range
+        - delete_event(event_id): Delete an event
+        - format_event_details(event): Format event details for display
 
-                local_tz = pytz.timezone(win32timezone.getTimeZoneName())
-            else:  # Unix-like systems
-                tz_str = subprocess.check_output(["date", "+%Z"]).decode().strip()
-                if tz_str:
-                    local_tz = pytz.timezone(tz_str)
-        except Exception as e:
-            print(f"Warning: Could not determine system timezone, using default: {e}")
+        When adding events, you need:
+        - title: Event title
+        - start_time: Start time in ISO format
+        - end_time: End time in ISO format
+        - description (optional): Event description
 
+        When getting events, provide time_min and time_max in ISO format.
+        When deleting events, provide the event_id from the event details.
+        
+        When using relative dates, convert them to the actual date.
+        For example, if they say "next week", you need to convert that to the date.
+        Today is {datetime.now().strftime("%Y-%m-%d")}
+        
+        IMPORTANT: Store all times in UTC format (e.g., "2024-04-02T14:00:00Z")
+
+        Example usage:
+        To add an event:
+        ```python
+        add_event(event_details: {{
+            "title": "Team Meeting",
+            "start_time": "2024-04-02T14:00:00",
+            "end_time": "2024-04-02T15:00:00",
+            "description": "Weekly team sync"
+        }})
+        ```
+
+        To get events:
+        ```python
+        get_events(
+            time_min="2024-04-02T00:00:00",
+            time_max="2024-04-02T23:59:59"
+        )
+        ```
+
+        To delete an event:
+        ```python
+        delete_event(event_id="event_id_here")
+        ```
+
+        Remember: Always use the actual functions to perform operations. Do not just say you've done something without calling the appropriate function.""")
+
+    def _create_tools(self) -> List[FunctionTool]:
+        """Create the tools for the calendar agent"""
         async def add_event_wrapper(event_details: Dict[str, Any]) -> str:
             try:
                 print("Adding event with details:")
@@ -72,7 +139,7 @@ def create_calendar_agent(model_client):
 
                 print("\nPreparing to add event to Google Calendar...")
                 print("Making API call to Google Calendar...")
-                result = await add_event(calendar_service, event_details)
+                result = await add_event(self._calendar_service, event_details)
                 print(f"\nEvent addition result: {'SUCCESS' if result else 'FAILED'}")
                 return "Event successfully added to calendar" if result else "Failed to add event to calendar"
             except Exception as e:
@@ -109,7 +176,7 @@ def create_calendar_agent(model_client):
                 )
 
                 events = await get_events(
-                    calendar_service, time_min, time_max
+                    self._calendar_service, time_min, time_max
                 )
                 if events:
                     print(f"\nFound {len(events)} events:")
@@ -123,106 +190,71 @@ def create_calendar_agent(model_client):
         async def delete_event_wrapper(event_id: str) -> str:
             try:
                 print(f"Attempting to delete event with ID: {event_id}")
-
-                result = await delete_event(calendar_service, event_id)
+                result = await delete_event(self._calendar_service, event_id)
                 print(f"\nEvent deletion result: {'SUCCESS' if result else 'FAILED'}")
-                if result:
-                    return "Event successfully deleted from calendar"
-                else:
-                    return "Failed to delete event from calendar"
+                return "Event successfully deleted from calendar" if result else "Failed to delete event from calendar"
             except Exception as e:
                 print(f"\nERROR deleting event: {str(e)}")
                 return f"Error deleting event: {str(e)}"
-        
-        async def add_multiple_events_wrapper(event_details: List[Dict[str, Any]]) -> str:
-            try:
-                print("Adding multiple events with details:")
-                for event in event_details:
 
-                    result = await add_event_wrapper(event)
-                    print(f"\nEvent addition result: {'SUCCESS' if result else 'FAILED'}")
-                    return "Event successfully added to calendar" if result else "Failed to add event to calendar"
-            except Exception as e:
-                print(f"\nERROR adding multiple events: {str(e)}")
-                return f"Error adding multiple events: {str(e)}"
-                
-        
-        
-        add_event_tool = FunctionTool(add_event_wrapper, description="Add an event to the calendar")
-        get_events_tool = FunctionTool(get_events_wrapper, description="Get events from the calendar")
-        delete_event_tool = FunctionTool(delete_event_wrapper, description="Delete an event from the calendar")
-        add_multiple_events_tool = FunctionTool(add_multiple_events_wrapper, description="Add multiple events to the calendar")
-        # Create the assistant agent
-        assistant = AssistantAgent(
-            name="scheduling_assistant",
-            description="An assistant that can help with calendar operations",
-            model_client=model_client,
-            tools=[add_event_tool, get_events_tool, delete_event_tool, add_multiple_events_tool],
-            system_message=f"""You are a helpful scheduling assistant. Your role is to:
-            1. Process user requests for calendar operations
-            2. Validate required information for calendar events
-            3. Generate appropriate questions when information is missing
-            4. Coordinate with the calendar agent to perform operations
-            5. Provide clear responses to the user
-
-            IMPORTANT: You MUST use the provided functions to perform calendar operations. Do not just say you've done something - actually call the function.
-
-            You have access to the following functions:
-            - add_event(event_details): Add a new event to the calendar
-            - get_events(time_min, time_max): Get events in a time range
-            - delete_event(event_id): Delete an event
-            - format_event_details(event): Format event details for display
-
-            When adding events, you need:
-            - title: Event title
-            - start_time: Start time in ISO format
-            - end_time: End time in ISO format
-            - description (optional): Event description
-
-            When getting events, provide time_min and time_max in ISO format.
-            When deleting events, provide the event_id from the event details.
-            
-            When using relative dates, convert them to the actual date.
-            For example, if they say "next week", you need to convert that to the date.
-            Today is {datetime.now().strftime("%Y-%m-%d")}.
-            
-            IMPORTANT: Store all times in UTC format (e.g., "2024-04-02T14:00:00Z")
-
-            Example usage:
-            To add an event:
-            ```python
-            add_event({{
-                "title": "Team Meeting",
-                "start_time": "2024-04-02T14:00:00",
-                "end_time": "2024-04-02T15:00:00",
-                "description": "Weekly team sync"
-            }})
-            ```
-
-            To get events:
-            ```python
-            get_events(
-                time_min="2024-04-02T00:00:00",
-                time_max="2024-04-02T23:59:59"
+        return [
+            FunctionTool(
+                name="add_event",
+                description="Add a new event to the calendar",
+                func=add_event_wrapper
+            ),
+            FunctionTool(
+                name="get_events",
+                description="Get events in a time range",
+                func=get_events_wrapper
+            ),
+            FunctionTool(
+                name="delete_event",
+                description="Delete an event from the calendar",
+                func=delete_event_wrapper
             )
-            ```
+        ]
 
-            To delete an event:
-            ```python
-            delete_event(event_id="event_id_here")
-            ```
-            
-            To add multiple events:
-            ```python
-            add_multiple_events(event_details=[event_details1, event_details2, ...])
-            ```
+    @message_handler
+    async def handle_message(self, message: GroupChatMessage, ctx: MessageContext) -> None:
+        """Handle incoming messages"""
+        self._chat_history.extend([
+            UserMessage(content=f"Transferred to {message.body.source}", source="system"),
+            message.body,
+        ])
 
-            Remember: Always use the actual functions to perform operations. Do not just say you've done something without calling the appropriate function.""",
+    @message_handler
+    async def handle_request_to_speak(self, message: RequestToSpeak, ctx: MessageContext) -> None:
+        """Handle request to speak"""
+        Console().print(Markdown(f"### {self.id.type}: "))
+        self._chat_history.append(
+            UserMessage(content=f"Transferred to {self.id.type}, adopt the persona immediately.", source="system")
         )
-
         
-
-        return assistant
-    except Exception as e:
-        print(f"Error creating calendar agent: {str(e)}")
-        raise
+        # Ensure that the calendar tools are used
+        completion = await self._model_client.create(
+            [self._system_message] + self._chat_history,
+            tools=self._tools,
+            extra_create_args={"tool_choice": "required"},
+            cancellation_token=ctx.cancellation_token
+        )
+        
+        assert isinstance(completion.content, list) and all(
+            isinstance(item, FunctionCall) for item in completion.content
+        )
+        
+        results: List[str] = []
+        for tool_call in completion.content:
+            arguments = json.loads(tool_call.arguments)
+            Console().print(arguments)
+            # Find the matching tool by name
+            tool = next(t for t in self._tools if t.name == tool_call.name)
+            result = await tool.run_json(arguments, ctx.cancellation_token)
+            results.append(tool.return_value_as_string(result))
+        
+        await self.publish_message(
+            GroupChatMessage(
+                body=UserMessage(content="\n".join(results), source=self.id.type)
+            ),
+            DefaultTopicId(type=self._group_chat_topic_type)
+        )
