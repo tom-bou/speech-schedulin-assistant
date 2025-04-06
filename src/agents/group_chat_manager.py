@@ -71,13 +71,13 @@ class GroupChatManager(RoutedAgent):
             ]
         )
         selector_prompt = """You are in a role play game. The following roles are available:
-{roles}.
-Read the following conversation. Then select the next role from {participants} to play. Only return the role.
+        {roles}.
+        Read the following conversation. Then select the next role from {participants} to play, remember that if you are missing information, return the role of the planner. Only return the role.
 
-{history}
+        {history}
 
-Read the above conversation. Then select the next role from {participants} to play. Only return the role.
-"""
+        Read the above conversation. Then select the next role from {participants} to play. Only return the role.
+        """
         system_message = SystemMessage(
             content=selector_prompt.format(
                 roles=roles,
