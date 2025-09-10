@@ -1,5 +1,5 @@
 openai>=1.0.0
-pyautogen>=0.2.0
+ag2>=0.2.0
 openai-whisper>=20231117
 torch>=2.0.0
 pyttsx3>=2.90
